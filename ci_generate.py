@@ -6,8 +6,11 @@ os.makedirs(CONTENT, exist_ok=True)
 
 GROQ = os.environ.get("GROQ_API_KEY")
 HF = os.environ.get("HF_TOKEN")
+DEEPSEEK = os.environ.get("DEEPSEEK_API_KEY")
+GEMINI = os.environ.get("GEMINI_API_KEY")
 MODEL_GROQ = "qwen/qwen3.6-27b"
-MODEL_HF = "Qwen/Qwen3-8B"  # HF free inference; swap to any hosted text-gen
+MODEL_HF = "Qwen/Qwen3-8B"
+MODEL_DS = "deepseek-chat"
 
 def groq_chat(system, user, max_tokens=4000):
     if not GROQ: return None
@@ -22,13 +25,12 @@ def groq_chat(system, user, max_tokens=4000):
             d=r.json()
             if "choices" in d: return d["choices"][0]["message"]["content"]
             if "rate_limit" in str(d): time.sleep(20*(attempt+1)); continue
-        except Exception as e:
+        except Exception:
             time.sleep(10)
     return None
 
-def hf_chat(system, user, system_prompt=None):
+def hf_chat(system, user):
     if not HF: return None
-    # HF chat completions style via inference API
     url=f"https://api-inference.huggingface.co/models/{MODEL_HF}"
     hdr={"Authorization":f"Bearer {HF}", "Content-Type":"application/json"}
     payload={"inputs": f"{system}\n\n{user}", "parameters":{"max_new_tokens":1500,"return_full_text":False,"temperature":0.7}}
@@ -39,18 +41,46 @@ def hf_chat(system, user, system_prompt=None):
                 out=r.json()
                 if isinstance(out,list) and out: return out[0].get("generated_text","")
                 if isinstance(out,dict): return out.get("generated_text","")
-            if r.status_code==429:
-                time.sleep(20*(attempt+1)); continue
+            if r.status_code==429: time.sleep(20*(attempt+1)); continue
         except Exception:
             time.sleep(10)
     return None
 
+def ds_chat(system, user, max_tokens=4000):
+    if not DEEPSEEK: return None
+    for attempt in range(4):
+        try:
+            r=requests.post("https://api.deepseek.com/chat/completions",
+                headers={"Authorization":f"Bearer {DEEPSEEK}","Content-Type":"application/json"},
+                json={"model":MODEL_DS,"messages":[{"role":"system","content":system},{"role":"user","content":user}],"temperature":0.7,"max_tokens":max_tokens},timeout=120)
+            d=r.json()
+            if "choices" in d: return d["choices"][0]["message"]["content"]
+            if "rate_limit" in str(d): time.sleep(20*(attempt+1)); continue
+        except Exception:
+            time.sleep(10)
+    return None
+
+def gemini_chat(system, user, max_tokens=4000):
+    if not GEMINI: return None
+    # free tier often 429s; try once
+    try:
+        url=f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={GEMINI}"
+        payload={"contents":[{"parts":[{"text":f"{system}\n\n{user}"}]}],"generationConfig":{"maxOutputTokens":max_tokens,"temperature":0.7}}
+        r=requests.post(url,json=payload,timeout=120)
+        if r.status_code==200:
+            return r.json()["candidates"][0]["content"]["parts"][0]["text"]
+    except Exception:
+        pass
+    return None
+
 def chat(system, user, max_tokens=4000):
-    # try Groq first (fast), fall back to HF (free, Grok-independent)
-    out = groq_chat(system, user, max_tokens)
-    if out: return out, "groq"
-    out = hf_chat(system, user)
-    if out: return out, "hf"
+    # Free, Grok-independent cascade: Groq -> HF -> DeepSeek -> Gemini
+    for fn, name in [(groq_chat,"groq"),(hf_chat,"hf"),(ds_chat,"deepseek"),(gemini_chat,"gemini")]:
+        try:
+            out = fn(system, user, max_tokens) if name!="hf" else fn(system, user)
+            if out: return out, name
+        except Exception:
+            continue
     return None, None
 
 def extract_json(text):
