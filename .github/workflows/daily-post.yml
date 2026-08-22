@@ -1,0 +1,60 @@
+name: ARTISY Daily Blog Post
+
+on:
+  schedule:
+    - cron: "0 13 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout blog repo
+        uses: actions/checkout@v4
+        with:
+          repository: tingsterlott12-bit/artisy-blog
+          path: blog
+
+      - name: Checkout engine repo (generator + scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: tingsterlott12-bit/artisy-seo-engine
+          path: engine
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Sync engine into blog
+        run: |
+          cp -r engine/* blog/ 2>/dev/null || true
+
+      - name: Generate new post (EN + ES)
+        env:
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+        run: |
+          cd blog
+          python ci_generate.py
+
+      - name: Build site
+        run: |
+          cd blog
+          python build_site.py
+
+      - name: Commit and push
+        run: |
+          cd blog
+          git config user.name "ARTISY Bot"
+          git config user.email "tingsterlott12@gmail.com"
+          git add -A
+          git commit -m "Daily post: $(date -u +%Y-%m-%d)" || echo "no changes"
+          git push
+
+      - name: Submit to IndexNow (Bing/Yandex global index)
+        run: |
+          cd blog
+          python submit_indexnow.py
