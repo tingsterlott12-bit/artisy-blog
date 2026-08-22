@@ -1,48 +1,60 @@
-import requests, json, os, re, time, glob, random
-
-MODEL = "qwen/qwen3.6-27b"
-GROQ = os.environ.get("GROQ_API_KEY")
-if not GROQ:
-    raise SystemExit("GROQ_API_KEY env not set")
+import requests, json, os, re, time, glob
 
 BASE = os.path.dirname(os.path.abspath(__file__))
 CONTENT = f"{BASE}/content"
 os.makedirs(CONTENT, exist_ok=True)
 
-TOPICS_EN = [
-    ("Phonics vs whole language: what actually works for early readers", "phonics, whole language, teach child to read, early reading"),
-    ("5-minute daily reading habit that builds lifelong readers", "reading habit, daily reading, raise a reader, reading routine"),
-    ("How audiobooks help struggling readers catch up", "audiobooks for kids, struggling readers, reading fluency, listening comprehension"),
-    ("Teaching life skills through stories: a homeschool approach", "life skills for kids, homeschool life lessons, social emotional learning"),
-    ("Sight words made simple: a no-tears method", "sight words, high frequency words, kindergarten reading, dolch list"),
-    ("Reading comprehension questions that actually help", "comprehension questions, ask about reading, recall, inference"),
-    ("How to pick the right books for your child's reading level", "reading level, book selection, lexile, guided reading"),
-    ("Dyslexia-friendly reading strategies for home", "dyslexia, reading difficulty, multisensory reading, Orton-Gillingham"),
-    ("Summer reading without the battle", "summer reading, prevent slide, fun reading, library challenge"),
-    ("Using drawing and art to boost reading comprehension", "drawing comprehension, visual reading, art and literacy"),
-]
-TOPICS_ES = [(t[0], t[1]) for t in TOPICS_EN]  # we regenerate ES via translation prompt
+GROQ = os.environ.get("GROQ_API_KEY")
+HF = os.environ.get("HF_TOKEN")
+MODEL_GROQ = "qwen/qwen3.6-27b"
+MODEL_HF = "Qwen/Qwen3-8B"  # HF free inference; swap to any hosted text-gen
 
-def groq(system, user, max_tokens=4000):
-    for attempt in range(8):
-        r = requests.post("https://api.groq.com/openai/v1/chat/completions",
-            headers={"Authorization": f"Bearer {GROQ}", "Content-Type": "application/json"},
-            json={"model": MODEL, "messages":[
-                {"role":"system","content":system},
-                {"role":"user","content":user}],
-                "temperature":0.7, "max_tokens":max_tokens}, timeout=180)
-        data = r.json()
-        if "choices" in data:
-            return data["choices"][0]["message"]["content"]
-        msg = data.get("error",{}).get("message","")
-        if "rate_limit" in msg or r.status_code == 429:
-            wait = 25*(attempt+1)
-            print(f"  [rate-limit] retry {attempt+1} in {wait}s")
-            time.sleep(wait); continue
-        raise RuntimeError(f"Groq {r.status_code}: {data}")
-    raise RuntimeError("rate-limited")
+def groq_chat(system, user, max_tokens=4000):
+    if not GROQ: return None
+    for attempt in range(4):
+        try:
+            r = requests.post("https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {GROQ}", "Content-Type": "application/json"},
+                json={"model": MODEL_GROQ, "messages":[
+                    {"role":"system","content":system},
+                    {"role":"user","content":user}],
+                    "temperature":0.7, "max_tokens":max_tokens}, timeout=120)
+            d=r.json()
+            if "choices" in d: return d["choices"][0]["message"]["content"]
+            if "rate_limit" in str(d): time.sleep(20*(attempt+1)); continue
+        except Exception as e:
+            time.sleep(10)
+    return None
+
+def hf_chat(system, user, system_prompt=None):
+    if not HF: return None
+    # HF chat completions style via inference API
+    url=f"https://api-inference.huggingface.co/models/{MODEL_HF}"
+    hdr={"Authorization":f"Bearer {HF}", "Content-Type":"application/json"}
+    payload={"inputs": f"{system}\n\n{user}", "parameters":{"max_new_tokens":1500,"return_full_text":False,"temperature":0.7}}
+    for attempt in range(3):
+        try:
+            r=requests.post(url,headers=hdr,json=payload,timeout=120)
+            if r.status_code==200:
+                out=r.json()
+                if isinstance(out,list) and out: return out[0].get("generated_text","")
+                if isinstance(out,dict): return out.get("generated_text","")
+            if r.status_code==429:
+                time.sleep(20*(attempt+1)); continue
+        except Exception:
+            time.sleep(10)
+    return None
+
+def chat(system, user, max_tokens=4000):
+    # try Groq first (fast), fall back to HF (free, Grok-independent)
+    out = groq_chat(system, user, max_tokens)
+    if out: return out, "groq"
+    out = hf_chat(system, user)
+    if out: return out, "hf"
+    return None, None
 
 def extract_json(text):
+    if not text: return None
     text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
     start = text.find("{")
     if start == -1: return None
@@ -74,57 +86,55 @@ BRAND = """You are Ting Lott, RN, homeschool mom, creator of ARTISY (artistrysto
 Voice: warm, practical, encouraging, no fluff. Help parents teach reading/life skills to kids.
 Sell homeschool apps, reading tools, audiobooks, coloring books on Gumroad. Write REAL, specific content. Never use "..." or placeholders."""
 
-# pick a topic we haven't done yet
-existing = [os.path.basename(f) for f in glob.glob(f"{CONTENT}/article_en*.json")]
-idx = len(existing) - 1  # we have article_en.json (idx 0) and article_en_<n>.json
-topic_idx = idx % len(TOPICS_EN)
-en_topic, en_kw = TOPICS_EN[topic_idx]
-# translate topic to Spanish
-es_topic = groq(BRAND+"\nTranslate ONLY to Spanish.", f"Translate this to natural Spanish: {en_topic}")
-es_topic = es_topic.strip().strip('"')
+TOPICS_EN = [
+    ("Phonics vs whole language: what actually works for early readers", "phonics, whole language, teach child to read, early reading"),
+    ("5-minute daily reading habit that builds lifelong readers", "reading habit, daily reading, raise a reader, reading routine"),
+    ("How audiobooks help struggling readers catch up", "audiobooks for kids, struggling readers, reading fluency, listening comprehension"),
+    ("Teaching life skills through stories: a homeschool approach", "life skills for kids, homeschool life lessons, social emotional learning"),
+    ("Sight words made simple: a no-tears method", "sight words, high frequency words, kindergarten reading, dolch list"),
+]
+existing = glob.glob(f"{CONTENT}/article_en*.json")
+idx = len(existing)  # next index
+ti = (idx-1) % len(TOPICS_EN)
+en_topic, en_kw = TOPICS_EN[ti]
+print(f"Post #{idx+1}: {en_topic}")
 
-print(f"Generating post #{idx+1}: {en_topic}")
+def make_article(lang, topic, kw):
+    L = "Spanish" if lang=="es" else "English"
+    sys = BRAND + f"\nWrite ONLY in {L}."
+    if lang=="es":
+        usr = f"""Escribe un articulo de blog SEO completo y original sobre: {topic}
+Palabras clave: {kw}
+Devuelve SOLO JSON: {{"title":"<60 chars","meta":"<155 chars","h1":"titular","sections":[5x {{"h2":str,"body":str}}],"faq":[3x {{"q":str,"a":str}}]}}"""
+    else:
+        usr = f"""Write a complete, original, SEO blog article about: {topic}
+Keywords: {kw}
+Return ONLY JSON: {{"title":"<60 char","meta":"<155 char","h1":"headline","sections":[5x {{"h2":str,"body":str}}],"faq":[3x {{"q":str,"a":str}}]}}"""
+    for attempt in range(5):
+        out, src = chat(sys, usr)
+        if out:
+            js = extract_json(out)
+            if js:
+                try:
+                    d=json.loads(js)
+                    if is_real_article(d): return d, src
+                except: pass
+        time.sleep(15)
+    return None, None
 
-# EN article
-en_art=None
-for attempt in range(4):
-    sys = BRAND + "\nWrite ONLY in English."
-    usr = f"""Write a complete, original, SEO blog article about: {en_topic}
-Keywords: {en_kw}
-Return ONLY JSON (no prose):
-{{"title":"<60 char SEO title","meta":"<155 char meta","h1":"headline","sections":[5x {{"h2":str,"body":str}}],"faq":[3x {{"q":str,"a":str}}]}}"""
-    js = extract_json(groq(sys, usr))
-    if js:
-        try:
-            d=json.loads(js)
-            if is_real_article(d): en_art=d; break
-        except: pass
-    time.sleep(20)
+en_art, src1 = make_article("en", en_topic, en_kw)
 if not en_art:
-    print("EN article failed; exiting"); raise SystemExit(1)
+    print("EN failed; exit"); raise SystemExit(1)
 json.dump(en_art, open(f"{CONTENT}/article_en_{idx+1}.json","w",encoding="utf-8"), ensure_ascii=False, indent=2)
-print("  EN saved:", en_art["title"])
+print("  EN saved via", src1, ":", en_art["title"])
 
 time.sleep(10)
-
-# ES article (translate + localize)
-es_art=None
-for attempt in range(4):
-    sys = BRAND + "\nWrite ONLY in Spanish."
-    usr = f"""Escribe un articulo de blog SEO completo y original sobre: {es_topic}
-Palabras clave: {en_kw}
-Devuelve SOLO JSON (sin texto extra):
-{{"title":"titulo SEO <60 chars","meta":"meta <155 chars","h1":"titular","sections":[5x {{"h2":str,"body":str}}],"faq":[3x {{"q":str,"a":str}}]}}"""
-    js = extract_json(groq(sys, usr))
-    if js:
-        try:
-            d=json.loads(js)
-            if is_real_article(d): es_art=d; break
-        except: pass
-    time.sleep(20)
+# ES: translate topic then generate
+es_topic_raw, _ = chat(BRAND+"\nTranslate ONLY to natural Spanish.", f"Translate to Spanish: {en_topic}")
+es_topic = (es_topic_raw or en_topic).strip().strip('"')
+es_art, src2 = make_article("es", es_topic, en_kw)
 if not es_art:
-    print("ES article failed; exiting"); raise SystemExit(1)
+    print("ES failed; exit"); raise SystemExit(1)
 json.dump(es_art, open(f"{CONTENT}/article_es_{idx+1}.json","w",encoding="utf-8"), ensure_ascii=False, indent=2)
-print("  ES saved:", es_art["title"])
-
-print("DONE generating")
+print("  ES saved via", src2, ":", es_art["title"])
+print("DONE")

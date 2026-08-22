@@ -36,6 +36,7 @@ jobs:
       - name: Generate new post (EN + ES)
         env:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           cd blog
           python ci_generate.py
