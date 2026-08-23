@@ -110,11 +110,14 @@ TOPICS = [
 def next_index():
     # content dir is the repo-root "content" folder (same as build_site.py uses)
     here = os.path.dirname(os.path.abspath(__file__))
-    # writer.py lives at repo root (site/), so content = site/content
     content = os.path.join(here, "content")
     os.makedirs(content, exist_ok=True)
-    files = glob.glob(os.path.join(content, "article_en*.json"))
-    return len(files)  # 0 -> article_en.json, 1 -> article_en_1.json, etc.
+    # find the smallest positive index N such that article_en_N.json does NOT exist
+    # (article_en.json is the manual index-0 post and is left untouched)
+    n = 1
+    while os.path.exists(os.path.join(content, f"article_en_{n}.json")):
+        n += 1
+    return n
 
 def make_article(lang, topic, kw):
     L = "Spanish" if lang == "es" else "English"
@@ -142,16 +145,16 @@ Return ONLY JSON: {{"title":"<60 char","meta":"<155 char","h1":"headline","secti
     return None, None
 
 def generate_pair():
-    idx = next_index()
-    ti = idx % len(TOPICS)
+    n = next_index()
+    ti = (n - 1) % len(TOPICS)
     en_topic, en_kw = TOPICS[ti]
-    print(f"[writer] Post #{idx+1}: {en_topic}")
+    print(f"[writer] Post #{n}: {en_topic}")
     en_art, src1 = make_article("en", en_topic, en_kw)
     if not en_art:
         print("[writer] EN failed"); return None
     here = os.path.dirname(os.path.abspath(__file__))
     content = os.path.join(here, "content")
-    json.dump(en_art, open(os.path.join(content, f"article_en_{idx+1}.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    json.dump(en_art, open(os.path.join(content, f"article_en_{n}.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print(f"[writer] EN saved via {src1}: {en_art['title']}")
     time.sleep(8)
     es_topic_raw, _ = chat(BRAND + "\nTranslate ONLY to natural Spanish.", f"Translate to Spanish: {en_topic}")
@@ -159,9 +162,9 @@ def generate_pair():
     es_art, src2 = make_article("es", es_topic, en_kw)
     if not es_art:
         print("[writer] ES failed"); return None
-    json.dump(es_art, open(os.path.join(content, f"article_es_{idx+1}.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=2)
+    json.dump(es_art, open(os.path.join(content, f"article_es_{n}.json"), "w", encoding="utf-8"), ensure_ascii=False, indent=2)
     print(f"[writer] ES saved via {src2}: {es_art['title']}")
-    return idx + 1
+    return n
 
 if __name__ == "__main__":
     res = generate_pair()
